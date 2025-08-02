@@ -1,0 +1,116 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_squared_error
+import warnings
+warnings.filterwarnings("ignore")
+
+train = pd.read_csv("train.csv", low_memory=False)
+test = pd.read_csv("test.csv")
+store = pd.read_csv("store.csv")
+submission = pd.read_csv("sample_submission.csv")
+
+train = pd.merge(train, store, on="Store", how="left")
+test = pd.merge(test, store, on="Store", how="left")
+
+train = train[train["Open"] != 0]
+
+# Feature Engineering
+def add_date_features(df):
+    df["Date"] = pd.to_datetime(df["Date"])
+    df["Year"] = df["Date"].dt.year
+    df["Month"] = df["Date"].dt.month
+    df["Day"] = df["Date"].dt.day
+    df["WeekOfYear"] = df["Date"].dt.isocalendar().week.astype(int)
+    df["IsWeekend"] = df["DayOfWeek"].isin([6, 7]).astype(int)
+    return df
+
+train = add_date_features(train)
+test = add_date_features(test)
+
+# 🧼 Handle Missing Values
+for df in [train, test]:
+    df["CompetitionDistance"].fillna(df["CompetitionDistance"].median(), inplace=True)
+    df["Promo2SinceWeek"].fillna(0, inplace=True)
+    df["Promo2SinceYear"].fillna(0, inplace=True)
+    df["PromoInterval"].fillna("None", inplace=True)
+
+drop_cols = ["Date", "Customers", "PromoInterval", "CompetitionOpenSinceMonth", "CompetitionOpenSinceYear"]
+train.drop(columns=drop_cols, inplace=True)
+existing_cols = [col for col in drop_cols if col in test.columns]
+test.drop(columns=existing_cols, inplace=True)
+
+cat_cols = ["StoreType", "Assortment", "StateHoliday"]
+train = pd.get_dummies(train, columns=cat_cols)
+test = pd.get_dummies(test, columns=cat_cols)
+
+# EDA: Visual Charts
+# Restore 'Date' column from features for plotting
+train["Date"] = pd.to_datetime(train["Year"].astype(str) + "-" + train["Month"].astype(str) + "-" + train["Day"].astype(str))
+
+# 1. Sales Over Time
+plt.figure(figsize=(12,5))
+sns.lineplot(x="Date", y="Sales", data=train.sort_values("Date"))
+plt.title("Sales Over Time")
+plt.xticks(rotation=45)
+plt.tight_layout()
+plt.savefig("sales_over_time.png")
+plt.show()
+
+# 2. Promo vs Sales
+plt.figure(figsize=(6,4))
+sns.boxplot(x="Promo", y="Sales", data=train)
+plt.title("Promo vs Sales")
+plt.savefig("promo_vs_sales.png")
+plt.show()
+
+# 3. StoreType vs Avg Sales
+plt.figure(figsize=(6,4))
+if "StoreType_a" in train.columns:
+    sns.barplot(x="StoreType_a", y="Sales", data=train)
+    plt.title("Store Type A vs Sales")
+    plt.savefig("storetype_vs_sales.png")
+    plt.show()
+
+# 4. Holiday vs Sales
+plt.figure(figsize=(6,4))
+if "StateHoliday_0" in train.columns:
+    sns.boxplot(x="StateHoliday_0", y="Sales", data=train)
+    plt.title("Holiday vs Sales")
+    plt.savefig("holiday_vs_sales.png")
+    plt.show()
+
+# 5. Correlation Heatmap
+plt.figure(figsize=(12,6))
+sns.heatmap(train.corr(), annot=True, fmt=".2f", cmap="coolwarm")
+plt.title("Feature Correlation Heatmap")
+plt.tight_layout()
+plt.savefig("correlation_heatmap.png")
+plt.show()
+
+# Align columns
+X = train.drop(columns=["Sales"])
+y = train["Sales"]
+X, test = X.align(test, join="left", axis=1, fill_value=0)
+
+# Train-Test Split
+X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
+
+# Train Model
+model = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1)
+model.fit(X_train, y_train)
+
+y_pred = model.predict(X_val)
+rmse = np.sqrt(mean_squared_error(y_val, y_pred))
+print("✅ Validation RMSE:", rmse)
+
+# Predict on Test
+final_preds = model.predict(test)
+
+# Save file
+submission["Sales"] = final_preds
+submission.to_csv("rossmann_submission.csv", index=False)
+print("✅ Submission file saved as 'rossmann_submission.csv'")
